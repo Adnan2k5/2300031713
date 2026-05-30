@@ -26,31 +26,17 @@ A header is still needed to identify the current user (student) so the system ca
 
 ```json
 {
-  "id": "ntf_2f1b8",
-  "title": "Placement Drive: ACME Corp",
-  "message": "ACME Corp drive on June 3, 10:00 AM in Auditorium.",
-  "type": "placement",
-  "status": "unread",
-  "createdAt": "2026-05-30T10:15:00Z"
+  "id": "ntf_2f1b8"
 }
 ```
 
-**Values**
-
-- `type`: `placement` | `event` | `result`
 - `status`: `unread` | `read` | `archived`
 
 ## REST API endpoints
 
-### 1-> List notifications
-
-**GET** `/notifications`
-
 **Query params**
 
 - `type`: optional, `placement|event|result`
-- `status`: optional, `unread|read|archived`
-- `limit`: optional, default `20`
 - `cursor`: optional
 
 **Request headers**
@@ -74,6 +60,11 @@ A header is still needed to identify the current user (student) so the system ca
   "nextCursor": "eyJvZmZzZXQiOjIw"
 }
 ```
+
+## Stage 6 (backend note)
+
+- Expose `GET /priority-inbox?limit=10` to return the top notifications
+- Use the same heap strategy inside the service for O(n log k)
 
 ### 2-> Get a single notification
 
@@ -298,3 +289,71 @@ WHERE notificationType = 'Placement'
 
 - Push: needs persistent connections and more server complexity
 - Cache: extra memory cost and cache invalidation complexity
+
+## Stage 5
+
+## Shortcomings in the proposed implementation
+
+- Sequential loop makes 50,000 calls slow and blocks the process
+- No retry, no idempotency, no tracking of per student delivery state
+- If `send_email` fails on the way, the function stops and results are inconsistent
+- Email and app push are coupled; a failure in one can block the other
+- No backpressure or rate limiting for external Email API
+
+## What happens when 200 emails fail?
+
+- Those students will miss email unless we retry
+- If DB save already happened, we need a delivery status to re-send only failed emails
+- If DB save did not happen, we risk lost notifications
+
+## Redesign for reliability and speed
+
+- Write a single notification record and enqueue per-student delivery jobs
+- Use an outbox table + worker queue (or message broker)
+- Process in batches with retries and exponential backoff
+- Track delivery status for email and in-app separately
+- Make operations idempotent to avoid duplicates
+
+## Should DB save and email happen together?
+
+- No, Save to DB should be atomic and fast; sending email is external and should be async.
+- If we couple them, a slow or failed email API can block DB writes and increase latency.
+
+## Revised pseudocode
+
+```text
+function notify_all(student_ids, message):
+  notification_id = insert_notification(message)
+
+  for batch in chunk(student_ids, 500):
+    insert_outbox_jobs(notification_id, batch)
+
+  return { status: "accepted", notification_id }
+
+worker process_outbox_job(job):
+  if job.email_status != "sent":
+    call_send_email(job.student_id, job.message)
+    mark_email_sent(job)
+
+  if job.app_status != "sent":
+    call_push_to_app(job.student_id, job.message)
+    mark_app_sent(job)
+
+  if failed:
+    retry_with_backoff(job)
+```
+
+## Stage 6
+
+## Priority inbox approach
+
+- Expose `GET /priority-inbox?limit=10` to return the top notifications
+- Assign weights: Placement > Result > Event
+- Combine weight and recency to compute a priority score
+- Keep a fixed-size min-heap for top 10 in O(n log k)
+
+## Efficient updates for new notifications
+
+- Maintain a min heap of size 10 in memory
+- On new notification: compute score and replace heap root if higher
+- This keeps updates O(log 10) per notification

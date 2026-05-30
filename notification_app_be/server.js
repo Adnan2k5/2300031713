@@ -1,14 +1,13 @@
-import express from "express";
-import dotenv from "dotenv";
-dotenv.config();
+import app from "./src/app.js";
+import { log } from "./src/logger.js";
 
-const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
-
-app.use(bodyParser.json(), { urlencoded: true });
-
 app.listen(PORT, () => {
-  console.log(`service is running on port ${PORT}`);
+  void log(
+    "backend",
+    "info",
+    "service",
+    `priority inbox service is running on port ${PORT}`,
+  );
 });
