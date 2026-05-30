@@ -19,7 +19,7 @@ router.get("/", async (req, res) => {
       "backend",
       "info",
       "service",
-      `Priority inbox served ${top.length} items`,
+      `Priority inbox fetched ${top.length} items`,
     );
 
     res.status(200).json({

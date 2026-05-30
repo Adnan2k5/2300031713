@@ -342,18 +342,3 @@ worker process_outbox_job(job):
   if failed:
     retry_with_backoff(job)
 ```
-
-## Stage 6
-
-## Priority inbox approach
-
-- Expose `GET /priority-inbox?limit=10` to return the top notifications
-- Assign weights: Placement > Result > Event
-- Combine weight and recency to compute a priority score
-- Keep a fixed-size min-heap for top 10 in O(n log k)
-
-## Efficient updates for new notifications
-
-- Maintain a min heap of size 10 in memory
-- On new notification: compute score and replace heap root if higher
-- This keeps updates O(log 10) per notification
