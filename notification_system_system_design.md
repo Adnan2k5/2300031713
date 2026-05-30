@@ -149,3 +149,152 @@ A header is still needed to identify the current user (student) so the system ca
   }
 }
 ```
+
+## Stage 2
+
+## Suggested DB
+
+**PostgreSQL**
+
+**Because**
+
+- Strong consistency and ACID transactions for reliable storage
+- Simple joins for user specific inbox
+- Good indexing and partitioning options as volume grows
+
+## Schema
+
+```sql
+CREATE TABLE notifications (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('placement', 'event', 'result')),
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  action_url TEXT
+);
+
+CREATE TABLE notification_recipients (
+  notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'unread' CHECK (status IN ('unread', 'read', 'archived')),
+  read_at TIMESTAMP,
+  PRIMARY KEY (notification_id, user_id)
+);
+
+CREATE INDEX idx_recipients_user_created
+  ON notification_recipients (user_id);
+
+CREATE INDEX idx_notifications_type_created
+  ON notifications (type, created_at DESC);
+```
+
+## Scale problems
+
+- Large inbox per user can slow list queries
+- Indexes and storage growth increase write cost
+- Old notifications make queries and backups heavy
+
+## Solutions
+
+- Add composite index: `(user_id, status, notification_id)`
+- Partition `notifications` by month on `created_at`
+
+## Queries based on Stage 1 APIs
+
+**Publish notification (POST /notifications)**
+
+```sql
+BEGIN;
+INSERT INTO notifications (id, title, message, type, action_url)
+VALUES (:id, :title, :message, :type, :action_url);
+
+INSERT INTO notification_recipients (notification_id, user_id)
+VALUES
+  (:id, 'stu_123'),
+  (:id, 'stu_456');
+COMMIT;
+```
+
+**List notifications (GET /notifications)**
+
+```sql
+SELECT n.id, n.title, n.message, n.type, r.status, n.created_at, n.action_url
+FROM notification_recipients r
+JOIN notifications n ON n.id = r.notification_id
+WHERE r.user_id = :user_id
+  AND (:type IS NULL OR n.type = :type)
+  AND (:status IS NULL OR r.status = :status)
+ORDER BY n.created_at DESC
+LIMIT :limit;
+```
+
+**Get a single notification (GET /notifications/{id})**
+
+```sql
+SELECT n.id, n.title, n.message, n.type, r.status, n.created_at, n.action_url
+FROM notification_recipients r
+JOIN notifications n ON n.id = r.notification_id
+WHERE r.user_id = :user_id
+  AND n.id = :id;
+```
+
+## Stage 3
+
+## Query accuracy
+
+The query is accurate only if `notifications` stores per student rows with `studentID` and `status`. In a normalized design, it is not accurate because status is per student.
+
+## Why it is slow
+
+- Full scan on a large table
+- Missing composite index for `studentID`, `status`, `createdAt`
+- `ORDER BY createdAt` forces a sort
+- `SELECT *` fetches extra data
+
+## What to change
+
+- Add composite index `(studentID, status, createdAt)`
+- Select required columns only
+- Use `LIMIT` for pagination
+
+**Cost**
+
+- Current: O(n log n)
+- With index: O(log n)
+
+## Index every column?
+
+It is Not effective as tt increases write cost and storage, and most queries use only a few indexes.
+
+## Better unread query
+
+```sql
+SELECT id, title, message, notificationType, createdAt
+FROM notifications
+WHERE studentID = 1042 AND status = false
+ORDER BY createdAt DESC
+LIMIT 50;
+```
+
+## Students with placement notifications in last 7 days
+
+```sql
+SELECT DISTINCT studentID
+FROM notifications
+WHERE notificationType = 'Placement'
+	AND createdAt >= NOW() - INTERVAL '7 days';
+```
+
+## Stage 4
+
+## Suggested solution
+
+- Fetch notifications only when the user opens the notifications view, not on every page load
+- Use real time push using WebSocket for new notifications and keep the client in sync
+- Cache recent notifications and unread counts in Redis
+
+## Tradeoffs
+
+- Push: needs persistent connections and more server complexity
+- Cache: extra memory cost and cache invalidation complexity
